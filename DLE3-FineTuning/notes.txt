@@ -1,0 +1,6 @@
+For anything from Part 3 on use the same dataset since we will be comparing.
+
+On the server, I can create anything in my home folder /home.nfs/michavo3.
+Copy template there
+`nvidia-smi` lists all GPUs. We choose one that is empty and `export CUDA_VISIBLE_DEVICES=3; python template.py`
+Before that we need to load modules `module load matplotlib/3.5.2-foss-2022a`

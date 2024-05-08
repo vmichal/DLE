@@ -1,0 +1,47 @@
+Relevant labels are random labels - we don't want to optimize anything in particular
+
+
+To the list of 6 initializations
+Xavier with ReLU should fail somehow
+We will see what it means to "work" - some initializations will be better
+
+In Part 2 we sould see that training should fail or not work properly.
+When the network does not work, CHECK THE DATA! our training set is not normlized,
+it is not centered around origin - some activation will be exploding.
+We may investigate this further, analyze it in our report and maybe get extra points.
+To make it work, normalize data by subtracting mean and dividing by std
+Next part of the experiment is to divide normalized data by 100 and observe convergence again.
+
+Website deeplearning.ai "Initializing Neural Networks" - animations
+When parameters are initialized very small, training will take long time
+because gradients are initially very small and it takes a long time to converge somewhere.
+With "Too large", net converges fast to bad values (high loss, low accuracy).
+
+Dropout is a form of regularization.
+We have MNIST dataset, fully connected network and try training it with and without dropout.
+It randomly selects connections and temporarily sets their weights to 0.
+	This effectively trains an ensemble similar networks.
+	We can start with 10 but go to thousands. Repetitive evaluation with the same data
+	always drops some connections and hence temporarily estabilishes a different network
+	i.e. repetitive evaluation gives random variables and by doing many of them
+	we increase robustness.
+
+Report in PDF or Jupyter notebook (only for visualization and import big chunks of code from elsewhere).
+Always discuss results, comment on graphs etc. Conclusions for the initialization task should be obvious but mention them regardless.
+Visualize with and without dropout, compare them. Maybe compute some variance and visualize it etc, it is up to us. Points listed in the assignment are not the maximum.
+
+Andrej Karpathy:
+When something is wrong, it usually just fails silently - converges to 80 % accuracy or similar.
+It takes some experience to find problems. If I plotted the data, I would immediatelly see
+that they are biased and not centered. Images may be quantized weirdly, one color channel may be missing,
+data may be incorrectly annotated.
+Once we understand the data, estabilish an end-to-end skeleton of the program.
+Do not touch test set yet, estabilish training set, validation set, training, evaluation, plotting.
+Use reasonable statistics - humans do not understand loss, we understand e.g. accuracy or normalized loss
+as average L2 distance.
+
+Python module einops - simpler rearrangement of dimensions etc. 
+
+
+Optical flow - two frames of video, identify what pixel goes where. Hard because of occlusions,
+	pixels hiding and appearing from behind obstacles
