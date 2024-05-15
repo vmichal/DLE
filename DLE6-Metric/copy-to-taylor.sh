@@ -1,0 +1,1 @@
+cp lab.py ~/taylor/DLE6

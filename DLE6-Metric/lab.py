@@ -11,6 +11,8 @@ import torch.optim as optim
 from tools import Dataset_to_XY, DataXY
 from argparse import ArgumentParser
 
+import pickle
+
 # query if we have GPU
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 print('Using device:', dev)
@@ -55,7 +57,6 @@ class ConvNet(nn.Sequential):
         f = nn.functional.normalize(f, p=2, dim=1)
         return f
 
-
 def new_net():
     return ConvNet().to(dev)
 
@@ -66,6 +67,10 @@ def load_net(filename):
     net.load_state_dict(torch.load(filename,map_location=dev))
     return net
 
+def get_features(net, dataset):
+    features = net.features(dataset.X)
+    labels = dataset.Y
+    return features, labels
 
 def distances(f1: torch.Tensor, f2: torch.Tensor):
     """All pairwise distances between feature vectors in f1 and feature vectors in f2:
@@ -76,7 +81,8 @@ def distances(f1: torch.Tensor, f2: torch.Tensor):
     assert (f1.dim() == 2)
     assert (f2.dim() == 2)
     assert (f1.size(1) == f2.size(1))
-    # TODO: implement
+    # VoMi: implement
+    return torch.cdist(f1, f2)
 
 
 def evaluate_AP(dist: np.array, labels: np.array, query_label: int):
@@ -86,14 +92,16 @@ def evaluate_AP(dist: np.array, labels: np.array, query_label: int):
     query_label: label of the query document
     return: AP -- average precision, Prec -- Precision, Rec -- Recall
     """
-    ii = np.argsort(dist)
+    N = labels.size(0)
+    ii = torch.argsort(dist)
     dist = dist[ii]
     labels = labels[ii]
-    rel = np.equal(labels, query_label).astype(int)
-    # TODO: implement the computation
-    AP = 0
-    Prec = 0
-    Rec = 0
+    rel = (labels == query_label).double()
+    T = rel.sum()
+    # VoMi: implement the computation
+    Prec = torch.cumsum(rel, dim=0) / np.arange(1, N + 1)
+    Rec = torch.cumsum(rel, dim=0) / T
+    AP = torch.inner(Prec, rel) / T
     return AP, Prec, Rec
 
 
@@ -105,15 +113,29 @@ def evaluate_mAP(net, dataset: DataXY):
     Returns: mAP -- mean average precision, mRec -- mean recall, mPrec -- mean precision
     """
     torch.manual_seed(1)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True, num_workers=0)
-    # use first 100 samples from this loader as queries, use all samples as possible items to retrive, exclude the query from the retrieved items
-    # TODO: implement
+    # use first 100 samples from this loader as queries, use all samples as possible
+    # items to retrive, exclude the query from the retrieved items
+    # VoMi: implement
     # will need to call evaluate_AP
-    mAP = 0
-    mPrec = 0
-    mRec = 0
-    return mAP, mPrec, mRec
+    mAP = []
+    mPrec = []
+    mRec = []
 
+    features, labels = get_features(net, dataset)
+    dists = distances(features, features)
+    query_idxs = np.random.choice(len(dataset), size=100, replace=False)
+    for i, query_index in enumerate(query_idxs):
+        all_but_query = np.arange(len(dataset)) != query_index
+        AP, Prec, Rec = evaluate_AP(dists[query_index, all_but_query], labels[all_but_query], labels[query_index])
+        mAP.append(AP)
+        mPrec.append(Prec)
+        mRec.append(Rec)
+
+    mAP = torch.stack(mAP).mean()
+    mPrec = torch.stack(mPrec, dim=-1).mean(dim=-1)
+    mRec = torch.stack(mRec, dim=-1).mean(dim=-1)
+
+    return mAP, mPrec, mRec
 
 def evaluate_acc(net, loss_f, loader):
     net.eval()
@@ -121,7 +143,7 @@ def evaluate_acc(net, loss_f, loader):
         acc = 0
         loss = 0
         n_data = 0
-        for i, (data, target) in enumerate(loader):
+        for data, target in loader:
             data, target = data, target
             y = net(data)
             l = loss_f(y, target)  # noqa: E741
@@ -132,13 +154,16 @@ def evaluate_acc(net, loss_f, loader):
         loss /= n_data
     return (loss, acc)
 
+def train(net, train_loader, val_loader, loss_f, epochs, name, filename):
+    optimizer = optim.Adam(net.parameters(), lr=0.01)
 
-def train_class(net, train_loader, val_loader, epochs=20, name: str = None):
-    loss_f = nn.CrossEntropyLoss(reduction='none')
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-
+    val_accuracies = []
+    val_losses = []
+    train_accuracies = []
+    train_losses = []
+    best_val_acc = 0
     for epoch in range(epochs):
-        print("Epoch {}".format(epoch))
+        print(f"{epoch = }")
         train_acc = 0
         train_loss = 0
         n_train_data = 0
@@ -152,15 +177,38 @@ def train_class(net, train_loader, val_loader, epochs=20, name: str = None):
             optimizer.zero_grad()
             l.mean().backward()
             optimizer.step()
+
         train_loss /= n_train_data
         train_acc /= n_train_data
-        #
-        val_loss, val_acc = evaluate_acc(net, loss_f, val_loader)
-        print(f'Epoch: {epoch} mean loss: {train_loss}')
-        print("Train accuracy {}, Val accuracy: {}".format(train_acc, val_acc))
-        if name is not None:
-            torch.save(net.state_dict(), name)
 
+        train_accuracies.append(train_acc)
+        train_losses.append(train_loss)
+        
+        val_loss, val_acc = evaluate_acc(net, loss_f, val_loader)
+        
+        val_accuracies.append(val_acc)
+        val_losses.append(val_loss)
+
+        print(f'Epoch: {epoch} mean loss: {train_loss}')
+        print(f"Train accuracy {train_acc}, Val accuracy: {val_acc}")
+        d = {
+            'train_acc' : train_accuracies,
+            'train_loss' : train_losses,
+            'val_acc' : val_accuracies,
+            'val_loss' : val_losses
+        }
+        with open(filename, 'wb') as file:
+                pickle.dump(d, file)
+
+        if val_acc > best_val_acc:
+            print(f'New best val acc {val_acc}, saving model')
+            best_val_acc = val_acc
+            if name is not None:
+                torch.save(net.state_dict(), name)
+        
+
+def train_class(net, train_loader, val_loader, epochs, name: str, filename):
+    return train(net, train_loader, val_loader, nn.CrossEntropyLoss(reduction='none'), epochs, name, filename)
 
 def triplet_loss(features: torch.Tensor, labels: torch.Tensor, alpha=0.5):
     """
@@ -170,18 +218,35 @@ def triplet_loss(features: torch.Tensor, labels: torch.Tensor, alpha=0.5):
 
     Implement: max(0, d(a,p) - d(a,n) + alpha )) for a=0:10 and all valid p,n in the batch
     """
-    L = 0
-    # TODO: implement
+    # VoMi: implement
+    anchors = torch.arange(10) # anchors
+    dists = distances(features, features)
+    L = torch.zeros_like(anchors, dtype=torch.float64)
+    for a in anchors:
+        p = labels == labels[a]
+        n = labels != labels[a]
+
+        dp = dists[a, p]
+        dn = dists[a, n]
+
+        dp = dp.reshape(1, -1) # Allow broadcasting
+        dn = dn.reshape(-1, 1) # Allow broadcasting
+
+        expression = dp - dn + alpha
+        expression = torch.nn.functional.relu(expression)
+        l = expression.sum()
+
+        L[a] = l
+
     return L
 
 
-def train_triplets(net, train_loader, epochs=20, name: str = None):
+def train_triplets(net, train_loader, epochs, name: str, filename):
     """
     training with triplet loss
     """
-    # TODO: implement
-    pass
-
+    # VoMi: implement
+    return train(net, train_loader, val_loader, triplet_loss, epochs, name, filename)
 
 def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.5):
     """
@@ -191,17 +256,55 @@ def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.5):
 
     Implement smoothAP loss as defied in the lab for a=0:10 and all valid p,n in the batch
     """
-    L = 0
-    # TODO: implement
+    # VoMi: implement
+    anchors = torch.arange(10) # anchors
+    dists = distances(features, features)
+    L = torch.zeros_like(anchors, dtype=torch.float64)
+    sigmoid = lambda x: torch.sigmoid(x / tau)
+    for a in anchors:
+        p = labels == labels[a]
+        n = labels != labels[a]
+        #print(f'{p = }')
+        #print(f'{n = }')
+
+        dp = dists[a, p]
+        dn = dists[a, n]
+        #print(f'{dp = }')
+        #print(f'{dn = }')
+        
+        # Calculate k
+        dx = dists[a, :].reshape(1, -1) # Allow broadcasting
+        dp = dp.reshape(-1, 1)
+        #print(f'{dp = }')
+        #print(f'{dx = }')
+        tmp = dp - dx
+        #print(f'{tmp = }')
+        kp = sigmoid(tmp).sum(dim=1)
+        #print(f'{kp = }')
+
+        # Calculate numerator
+        dn = dn.reshape(1, -1) # Allow broadcasting
+        #print(f'{dp = }')
+        #print(f'{dn = }')
+        tmp = dp - dn
+        #print(f'{tmp = }')
+        num = sigmoid(tmp).sum(dim=1)
+        #print(f'{num = }')
+
+        #print(f'{(num / kp) = }')
+        l = (num / kp).sum()
+
+        L[a] = l
+
     return L
 
 
-def train_smooth_AP(net, train_loader, epochs=20, name: str = None):
+def train_smooth_AP(net, train_loader, epochs, name: str, filename):
     """
     training with smoothAP loss
     """
-    # TODO: implement
-    pass
+    # VoMi: implement
+    return train(net, train_loader, val_loader, smooth_AP_loss, epochs, name, filename)
 
 
 if __name__ == '__main__':
@@ -212,21 +315,24 @@ if __name__ == '__main__':
     args = ap.parse_args()
 
     if args.train == 0:
-        net = ConvNet(10)
-        net.to(dev)
-        train_class(net, train_loader, val_loader, epochs=args.epochs, name=model_names[0])
+        net = new_net()
+        print('Training class')
+        train_class(net, train_loader, val_loader, epochs=args.epochs, name=model_names[0], filename='pickle/train-class.pickle')
+        
 
     if args.train == 1:
-        net = ConvNet(10)
-        net.to(dev)
-        train_triplets(net, train_loader, epochs=args.epochs, name=model_names[1])
+        net = new_net()
+        print('Training triplets')
+        train_triplets(net, train_loader, epochs=args.epochs, name=model_names[1], filename='pickle/train-triplets.pickle')
 
     if args.train == 2:
-        net = ConvNet(10)
-        net.to(dev)
-        train_smooth_AP(net, train_loader, epochs=args.epochs, name=model_names[2])
+        net = new_net()
+        print('Training smooth AP')
+        train_smooth_AP(net, train_loader, epochs=args.epochs, name=model_names[2], filename='pickle/train-smoothAP.pickle')
+        
 
     if args.eval > -1:
+        print(f'Eval {model_names[args.eval]}')
         net = load_net(model_names[args.eval])
 
         mAP, mPrec, mRec = evaluate_mAP(net, test_set)

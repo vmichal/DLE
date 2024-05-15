@@ -1,0 +1,5 @@
+Remote server process:
+
+Find free GPU using `nvidia-smi`, record its ID
+
+`export CUDA_VISIBLE_DEVICES=ID; ./python_ml template.py`
