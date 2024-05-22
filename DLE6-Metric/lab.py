@@ -15,7 +15,7 @@ import pickle
 
 # query if we have GPU
 dev = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-print('Using device:', dev)
+print(f'Using device: {dev}')
 
 # Global datasets
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
@@ -25,6 +25,7 @@ train_set, val_set = train_set.split(valid_size=0.1)
 # test set
 test_set = Dataset_to_XY(torchvision.datasets.FashionMNIST('./data', download=True, train=False, transform=transform))
 test_set = test_set.fraction(fraction=0.1)
+
 #
 # dataloaders
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=64, shuffle=True, num_workers=0)
@@ -32,7 +33,7 @@ val_loader = torch.utils.data.DataLoader(val_set, batch_size=64, shuffle=False, 
 test_loader = torch.utils.data.DataLoader(test_set, batch_size=64, shuffle=False, num_workers=0)
 #
 
-model_names = ['./models/' + name for name in ['net_class.pl', 'net_triplet.pl', "net_smoothAP.pl"]]
+model_names = ['net_class', 'net_triplet', "net_smoothAP"]
 
 
 class ConvNet(nn.Sequential):
@@ -60,11 +61,10 @@ class ConvNet(nn.Sequential):
 def new_net():
     return ConvNet().to(dev)
 
-
 def load_net(filename):
     net = ConvNet()
     net.to(dev)
-    net.load_state_dict(torch.load(filename,map_location=dev))
+    net.load_state_dict(torch.load(f'./models/{filename}.pl',map_location=dev))
     return net
 
 def get_features(net, dataset):
@@ -117,23 +117,18 @@ def evaluate_mAP(net, dataset: DataXY):
     # items to retrive, exclude the query from the retrieved items
     # VoMi: implement
     # will need to call evaluate_AP
-    mAP = []
-    mPrec = []
-    mRec = []
+    data = [] # (AP, Prec, Rec)
 
     features, labels = get_features(net, dataset)
     dists = distances(features, features)
     query_idxs = np.random.choice(len(dataset), size=100, replace=False)
     for i, query_index in enumerate(query_idxs):
         all_but_query = np.arange(len(dataset)) != query_index
-        AP, Prec, Rec = evaluate_AP(dists[query_index, all_but_query], labels[all_but_query], labels[query_index])
-        mAP.append(AP)
-        mPrec.append(Prec)
-        mRec.append(Rec)
+        data += [evaluate_AP(dists[query_index, all_but_query], labels[all_but_query], labels[query_index])]
 
-    mAP = torch.stack(mAP).mean()
-    mPrec = torch.stack(mPrec, dim=-1).mean(dim=-1)
-    mRec = torch.stack(mRec, dim=-1).mean(dim=-1)
+    mAP = torch.stack([x[0] for x in data]).mean()
+    mPrec = torch.stack([x[1] for x in data], dim=-1).mean(dim=-1)
+    mRec = torch.stack([x[2] for x in data], dim=-1).mean(dim=-1)
 
     return mAP, mPrec, mRec
 
@@ -154,8 +149,14 @@ def evaluate_acc(net, loss_f, loader):
         loss /= n_data
     return (loss, acc)
 
-def train(net, train_loader, val_loader, loss_f, epochs, name, filename):
-    optimizer = optim.Adam(net.parameters(), lr=0.01)
+# Shared training function used for all cases. When training the net for classification,
+# train_for_classification is True and the result of net(data) is passed to loss function.
+# When trained for embeddings, result of net.features is passed to the loss function.
+# Accuracy/loss metrics are still recorded in order to plot them and conclude that
+# the accuracy of the model trained for embedding is abysmal because it is not what the model is trying to achieve
+def train(net, train_loader, val_loader, epochs, name: str, loss_f, train_for_classification : bool):
+    #optimizer = optim.Adam(net.parameters(), lr=3e-4)
+    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
 
     val_accuracies = []
     val_losses = []
@@ -163,14 +164,17 @@ def train(net, train_loader, val_loader, loss_f, epochs, name, filename):
     train_losses = []
     best_val_acc = 0
     for epoch in range(epochs):
-        print(f"{epoch = }")
         train_acc = 0
         train_loss = 0
         n_train_data = 0
         net.train()
-        for i, (data, target) in enumerate(train_loader):
+        for data, target in train_loader:
             y = net(data)
-            l = loss_f(y, target)  # noqa: E741
+            if train_for_classification:
+                l = loss_f(y, target)  # noqa: E741
+            else:
+                f = net.features(data)
+                l = loss_f(f, target)  # noqa: E741
             train_loss += l.sum().item()
             train_acc += (torch.argmax(y, dim=1) == target).float().sum().item()
             n_train_data += data.size(0)
@@ -189,26 +193,28 @@ def train(net, train_loader, val_loader, loss_f, epochs, name, filename):
         val_accuracies.append(val_acc)
         val_losses.append(val_loss)
 
-        print(f'Epoch: {epoch} mean loss: {train_loss}')
-        print(f"Train accuracy {train_acc}, Val accuracy: {val_acc}")
+        print(f'Epoch: {epoch:3d} mean loss: {train_loss:8.4f}, Train accuracy {train_acc:8.4f}, Val accuracy: {val_acc:8.4f}')
         d = {
-            'train_acc' : train_accuracies,
-            'train_loss' : train_losses,
-            'val_acc' : val_accuracies,
-            'val_loss' : val_losses
+            'train-acc' : train_accuracies,
+            'train-loss' : train_losses,
+            'val-acc' : val_accuracies,
+            'val-loss' : val_losses
         }
-        with open(filename, 'wb') as file:
+        with open(f'pickle/{name}.pickle', 'wb') as file:
                 pickle.dump(d, file)
 
-        if val_acc > best_val_acc:
-            print(f'New best val acc {val_acc}, saving model')
-            best_val_acc = val_acc
+        if train_for_classification:
+            if val_acc > best_val_acc:
+                print(f'New best val acc {val_acc:.4f}, saving model')
+                best_val_acc = val_acc
+                if name is not None:
+                    torch.save(net.state_dict(), f'./models/{name}.pl')
+        else: # train for embeddings: save the mode in every epoch
             if name is not None:
-                torch.save(net.state_dict(), name)
+                torch.save(net.state_dict(), f'./models/{name}.pl')
         
-
-def train_class(net, train_loader, val_loader, epochs, name: str, filename):
-    return train(net, train_loader, val_loader, nn.CrossEntropyLoss(reduction='none'), epochs, name, filename)
+def train_class(net, train_loader, val_loader, epochs, name: str):
+    return train(net, train_loader, val_loader, epochs, name, nn.CrossEntropyLoss(reduction='none'), True)
 
 def triplet_loss(features: torch.Tensor, labels: torch.Tensor, alpha=0.5):
     """
@@ -241,14 +247,14 @@ def triplet_loss(features: torch.Tensor, labels: torch.Tensor, alpha=0.5):
     return L
 
 
-def train_triplets(net, train_loader, epochs, name: str, filename):
+def train_triplets(net, train_loader, epochs, name: str):
     """
     training with triplet loss
     """
     # VoMi: implement
-    return train(net, train_loader, val_loader, triplet_loss, epochs, name, filename)
+    return train(net, train_loader, val_loader, epochs, name, triplet_loss, False)
 
-def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.5):
+def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.01):
     """
     smoothAP loss
     features [N, d] tensor of features for N data points
@@ -264,34 +270,21 @@ def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.5):
     for a in anchors:
         p = labels == labels[a]
         n = labels != labels[a]
-        #print(f'{p = }')
-        #print(f'{n = }')
 
         dp = dists[a, p]
         dn = dists[a, n]
-        #print(f'{dp = }')
-        #print(f'{dn = }')
         
         # Calculate k
-        dx = dists[a, :].reshape(1, -1) # Allow broadcasting
         dp = dp.reshape(-1, 1)
-        #print(f'{dp = }')
-        #print(f'{dx = }')
+        dx = dists[a, :].reshape(1, -1) # Allow broadcasting
         tmp = dp - dx
-        #print(f'{tmp = }')
         kp = sigmoid(tmp).sum(dim=1)
-        #print(f'{kp = }')
 
         # Calculate numerator
         dn = dn.reshape(1, -1) # Allow broadcasting
-        #print(f'{dp = }')
-        #print(f'{dn = }')
         tmp = dp - dn
-        #print(f'{tmp = }')
         num = sigmoid(tmp).sum(dim=1)
-        #print(f'{num = }')
 
-        #print(f'{(num / kp) = }')
         l = (num / kp).sum()
 
         L[a] = l
@@ -299,12 +292,12 @@ def smooth_AP_loss(features: torch.Tensor, labels: torch.Tensor, tau=0.5):
     return L
 
 
-def train_smooth_AP(net, train_loader, epochs, name: str, filename):
+def train_smooth_AP(net, train_loader, epochs, name: str):
     """
     training with smoothAP loss
     """
     # VoMi: implement
-    return train(net, train_loader, val_loader, smooth_AP_loss, epochs, name, filename)
+    return train(net, train_loader, val_loader, epochs, name, smooth_AP_loss, False)
 
 
 if __name__ == '__main__':
@@ -317,18 +310,18 @@ if __name__ == '__main__':
     if args.train == 0:
         net = new_net()
         print('Training class')
-        train_class(net, train_loader, val_loader, epochs=args.epochs, name=model_names[0], filename='pickle/train-class.pickle')
+        train_class(net, train_loader, val_loader, epochs=args.epochs, name=model_names[0])
         
 
     if args.train == 1:
         net = new_net()
         print('Training triplets')
-        train_triplets(net, train_loader, epochs=args.epochs, name=model_names[1], filename='pickle/train-triplets.pickle')
+        train_triplets(net, train_loader, epochs=args.epochs, name=model_names[1])
 
     if args.train == 2:
         net = new_net()
         print('Training smooth AP')
-        train_smooth_AP(net, train_loader, epochs=args.epochs, name=model_names[2], filename='pickle/train-smoothAP.pickle')
+        train_smooth_AP(net, train_loader, epochs=args.epochs, name=model_names[2])
         
 
     if args.eval > -1:

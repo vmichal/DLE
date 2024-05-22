@@ -1,2 +1,3 @@
 # new project files are in ~/taylor/DLE
 sshfs michavo3@taylor.felk.cvut.cz:/home.nfs/michavo3 ~/taylor -o reconnect,ServerAliveInterval=120,ServerAliveCountMax=3,follow_symlinks,compression=yes -o kernel_cache,entry_timeout=5
+sshfs michavo3@cantor.felk.cvut.cz:/home.nfs/michavo3 ~/cantor -o reconnect,ServerAliveInterval=120,ServerAliveCountMax=3,follow_symlinks,compression=yes -o kernel_cache,entry_timeout=5
