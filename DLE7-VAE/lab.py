@@ -122,36 +122,3 @@ def train(vae, train_loader, num_epochs):
 
     return list_nelbo, list_kl_div
         
-def train_class(net, train_loader, val_loader, epochs, name: str):
-    return train(net, train_loader, val_loader, epochs, name, nn.CrossEntropyLoss(reduction='none'), True)
-
-if __name__ == '__main__':
-    ap = ArgumentParser()
-    ap.add_argument("--train", type=int, default=-1, help="run training: 0 -- classification loss, 1 -- triplet loss")
-    ap.add_argument("--eval", type=int, default=-1, help="run evaluation: 0 -- classification loss, 1 -- triplet loss")
-    ap.add_argument("-e", "--epochs", type=int, default=100, help="training epochs")
-    args = ap.parse_args()
-
-    if args.train == 0:
-        net = new_net()
-        print('Training class')
-        train_class(net, train_loader, val_loader, epochs=args.epochs, name=model_names[0])
-        
-
-    if args.train == 1:
-        net = new_net()
-        print('Training triplets')
-        train_triplets(net, train_loader, epochs=args.epochs, name=model_names[1])
-
-    if args.train == 2:
-        net = new_net()
-        print('Training smooth AP')
-        train_smooth_AP(net, train_loader, epochs=args.epochs, name=model_names[2])
-        
-
-    if args.eval > -1:
-        print(f'Eval {model_names[args.eval]}')
-        net = load_net(model_names[args.eval])
-
-        mAP, mPrec, mRec = evaluate_mAP(net, test_set)
-        print(f"Test mAP: {mAP:3.2f}")
